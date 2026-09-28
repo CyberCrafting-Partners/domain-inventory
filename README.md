@@ -500,7 +500,9 @@ propriétaire et exposerait inutilement les clés au processus privilégié.
 - `adresses-ip.csv` : ASN, opérateur réseau, organisation, pays, attribution probable et indicateur de CDN/proxy.
 - `inventaire-global.csv` : vue dénormalisée consolidant domaine racine,
   registrar, contacts administratifs who.is, sous-domaines, IP, attribution
-  réseau et ports Nmap. Une ligne correspond à une combinaison domaine,
+  réseau et ports Nmap. La colonne `DerniereDecouverte` reprend la
+  `DerniereObservation` de l'entrée correspondante dans
+  `sous-domaines-dns.csv`. Une ligne correspond à une combinaison domaine,
   sous-domaine, type, IP et port.
 - `resume.json` : volume traité, date d'exécution et limites méthodologiques.
 
@@ -508,10 +510,16 @@ Les CSV sont encodés en UTF-8 avec BOM et utilisent le point-virgule, pour une 
 
 Les colonnes de `inventaire-global.csv` sont : `DomaineRacine`, `Registrar`,
 `ContactAdministratif`, `SousDomaine`, `Type`, `Resolu`,
-`SourceSousDomaine`, `AdresseIP`, `Organisation`, `ISP`,
+`SourceSousDomaine`, `DerniereDecouverte`, `AdresseIP`, `Organisation`, `ISP`,
 `HebergeurProbable`, `CDNouProxy`, `SourceAttribution`, `HoteEtat`, `Port` et
 `Etat`. Les contacts de rôle `admin` ou `administrative` sont dédupliqués et
 concaténés sous la forme `Nom | Organisation | Email | Téléphone`.
+`DerniereDecouverte` est une date UTC au format ISO 8601. En mode `merge`, elle
+n'est actualisée que lorsque la même observation DNS est retrouvée ; elle reste
+donc inchangée pour une observation historique absente de l'exécution courante.
+Pour un ancien CSV sans colonnes d'observation, elle suit la règle de migration
+décrite plus haut : la date de modification du fichier sert de date historique
+initiale et constitue donc une approximation documentée.
 
 ## Générer un rapport HTML complet
 

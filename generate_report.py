@@ -76,7 +76,10 @@ TEXT = {
             "sous-domaines-dns.csv": "Noms découverts ou testés, adresses résolues et indicateur wildcard.",
             "adresses-ip.csv": "ASN, opérateur, pays et attribution probable de l’hébergement.",
             "nmap.csv": "États des ports du scan TCP connect borné, lorsqu’il était activé.",
-            "inventaire-global.csv": "Vue dénormalisée par domaine, sous-domaine, IP et port Nmap.",
+            "inventaire-global.csv": (
+                "Vue dénormalisée par domaine, sous-domaine, dernière découverte, "
+                "IP et port Nmap."
+            ),
         },
         "notice": (
             "Les informations proviennent de sources publiques et peuvent être incomplètes, "
@@ -129,7 +132,10 @@ TEXT = {
             "sous-domaines-dns.csv": "Discovered or tested names, resolved addresses, and wildcard indicator.",
             "adresses-ip.csv": "ASN, operator, country, and probable hosting attribution.",
             "nmap.csv": "Port states from the bounded TCP connect scan, when enabled.",
-            "inventaire-global.csv": "Denormalized view by domain, subdomain, IP address, and Nmap port.",
+            "inventaire-global.csv": (
+                "Denormalized view by domain, subdomain, last discovery, IP address, "
+                "and Nmap port."
+            ),
         },
         "notice": (
             "Information comes from public sources and may be incomplete, redacted, or stale. "

@@ -15,6 +15,7 @@ GLOBAL_FIELDS = [
     "Type",
     "Resolu",
     "SourceSousDomaine",
+    "DerniereDecouverte",
     "AdresseIP",
     "Organisation",
     "ISP",
@@ -115,6 +116,9 @@ def build_global_rows(
                 "Type": _text(subdomain.get("Type")),
                 "Resolu": _text(subdomain.get("StatutDNS")),
                 "SourceSousDomaine": _text(subdomain.get("SourceSousDomaine")),
+                # The global discovery date follows the DNS observation grain:
+                # root domain + subdomain + record type + resolved IP address.
+                "DerniereDecouverte": _text(subdomain.get("DerniereObservation")),
                 "AdresseIP": ip,
                 "Organisation": _text(attribution.get("Organisation")),
                 "ISP": _text(attribution.get("ISP")),

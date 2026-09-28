@@ -327,7 +327,9 @@ target. "Low impact" does not mean invisible.
 - `nmap.csv`: bounded TCP port results when Nmap is enabled;
 - `inventaire-global.csv`: denormalized view combining root domain, registrar,
   who.is administrative contacts, subdomains, IP attribution, and Nmap ports.
-  Each row represents a domain, subdomain, type, IP, and port combination;
+  Its `DerniereDecouverte` column is copied from `DerniereObservation` on the
+  corresponding `sous-domaines-dns.csv` row. Each row represents a domain,
+  subdomain, type, IP, and port combination;
 - `resume.json`: execution counts, quota state, and methodological warnings.
 
 CSV files use semicolons and UTF-8 with BOM for spreadsheet compatibility. The
@@ -337,10 +339,16 @@ processing.
 
 `inventaire-global.csv` contains: `DomaineRacine`, `Registrar`,
 `ContactAdministratif`, `SousDomaine`, `Type`, `Resolu`,
-`SourceSousDomaine`, `AdresseIP`, `Organisation`, `ISP`,
+`SourceSousDomaine`, `DerniereDecouverte`, `AdresseIP`, `Organisation`, `ISP`,
 `HebergeurProbable`, `CDNouProxy`, `SourceAttribution`, `HoteEtat`, `Port`, and
 `Etat`. Contacts carrying the `admin` or `administrative` role are deduplicated
 and concatenated as `Name | Organization | Email | Phone`.
+`DerniereDecouverte` is an ISO 8601 UTC timestamp. In `merge` mode, it changes
+only when the same DNS observation is found again; it therefore remains
+unchanged for a historical observation missing from the current run.
+For a legacy CSV without observation columns, it follows the migration rule
+described above: the file modification time becomes the initial historical
+timestamp and is therefore a documented approximation.
 
 ## Generate a complete HTML report
 
