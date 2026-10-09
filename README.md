@@ -7,9 +7,11 @@ Le script `domain_inventory.py` collecte des informations publiques et peut,
 sur demande explicite, lancer un scan Nmap TCP limité. Sa configuration peut
 être externalisée dans un fichier YAML.
 
-Conservez `output_merge.py` et `global_output.py` dans le même dossier que
+Conservez `output_merge.py`, `global_output.py` et `virustotal_enrichment.py`
+dans le même dossier que
 `domain_inventory.py` et `domain_inventory_en.py` : les deux scripts principaux
-importent ces modules pour la fusion historique et la vue globale.
+importent ces modules pour la fusion historique, la vue globale et l'intégration
+VirusTotal.
 
 ## Prérequis
 
@@ -70,7 +72,7 @@ Références Debian : paquets officiels
 [`nmap`](https://packages.debian.org/stable/nmap), ainsi que les
 [notes de publication Debian sur les environnements Python gérés](https://www.debian.org/releases/stable/release-notes/).
 
-Les enrichissements DNSDumpster, who.is et WhoisXML API sont optionnels et
+Les enrichissements DNSDumpster, who.is, WhoisXML API et VirusTotal sont optionnels et
 nécessitent chacun une clé API personnelle. Le script n'effectue aucun scraping
 de leurs pages web.
 
@@ -122,7 +124,7 @@ Le YAML permet de configurer :
 - les préfixes de sous-domaines classiques ;
 - les sélecteurs DKIM testés par défaut ;
 - les ports Nmap par défaut ;
-- les clés API DNSDumpster, who.is et WhoisXML API.
+- les clés API DNSDumpster, who.is, WhoisXML API et VirusTotal.
 
 Extrait minimal pour les clés :
 
@@ -131,6 +133,7 @@ api_keys:
   dnsdumpster: "votre_cle_dnsdumpster"
   whois: "wis_live_votre_cle_whois"
   whoisxmlapi: "votre_cle_whoisxmlapi"
+  virustotal: "votre_cle_virustotal"
 ```
 
 `config.yaml` et `config.local.yaml` sont ignorés par Git. Ne placez jamais de
@@ -157,6 +160,7 @@ d'environnement remplacent les valeurs du YAML :
 $env:DNSDUMPSTER_API_KEY = "votre_cle_dnsdumpster"
 $env:WHOIS_API_KEY = "wis_live_votre_cle_whois"
 $env:WHOISXMLAPI_API_KEY = "votre_cle_whoisxmlapi"
+$env:VIRUSTOTAL_API_KEY = "votre_cle_virustotal"
 python .\domain_inventory.py --input .\domaines.txt --output .\resultats
 ```
 
@@ -166,6 +170,7 @@ Pour supprimer les clés de la session PowerShell après l'exécution :
 Remove-Item Env:DNSDUMPSTER_API_KEY
 Remove-Item Env:WHOIS_API_KEY
 Remove-Item Env:WHOISXMLAPI_API_KEY
+Remove-Item Env:VIRUSTOTAL_API_KEY
 ```
 
 Sous Bash/Linux, utilisez des variables exportées, puis supprimez-les de la
@@ -175,8 +180,9 @@ session après l'exécution :
 export DNSDUMPSTER_API_KEY="votre_cle_dnsdumpster"
 export WHOIS_API_KEY="wis_live_votre_cle_whois"
 export WHOISXMLAPI_API_KEY="votre_cle_whoisxmlapi"
+export VIRUSTOTAL_API_KEY="votre_cle_virustotal"
 python3 ./domain_inventory.py --input ./domaines.txt --output ./resultats
-unset DNSDUMPSTER_API_KEY WHOIS_API_KEY WHOISXMLAPI_API_KEY
+unset DNSDUMPSTER_API_KEY WHOIS_API_KEY WHOISXMLAPI_API_KEY VIRUSTOTAL_API_KEY
 ```
 
 DNSDumpster impose officiellement une requête au maximum toutes les deux
@@ -353,6 +359,66 @@ Les dates `firstSeen` et `lastSeen` du fournisseur sont conservées dans
 `inventaire-global.csv` : cette dernière reste la date à laquelle le script a
 effectivement retrouvé et résolu l'observation DNS.
 
+### Détection et réputation optionnelles avec VirusTotal
+
+L'option `--virustotal` active l'API v3. Pour chaque domaine racine, le script
+demande son rapport puis la relation `subdomains`. Cette relation renvoie les
+sous-domaines directs connus de VirusTotal avec leurs objets d'analyse ; elle
+n'est [pas récursive](https://docs.virustotal.com/reference/domain-object-subdomains).
+
+```powershell
+$env:VIRUSTOTAL_API_KEY = "votre_cle_virustotal"
+python .\domain_inventory.py --input .\domaines.txt `
+  --output .\resultats --virustotal --virustotal-plan public
+```
+
+```bash
+export VIRUSTOTAL_API_KEY="votre_cle_virustotal"
+python3 ./domain_inventory.py --input ./domaines.txt \
+  --output ./resultats --virustotal --virustotal-plan public
+```
+
+Le profil `public` applique au minimum 15 secondes entre deux requêtes et un
+plafond local de 500 requêtes UTC par jour, conformément aux
+[limites officielles de 4 requêtes/minute et 500/jour](https://docs.virustotal.com/reference/public-vs-premium-api).
+VirusTotal précise aussi que l'API publique ne doit pas être utilisée dans un
+produit commercial ni dans certains workflows professionnels non contributifs.
+Vérifiez votre droit d'usage ; utilisez `--virustotal-plan premium` uniquement
+avec une licence correspondante et configurez alors l'intervalle et le plafond
+selon votre contrat.
+
+Par défaut, une seule page de 10 sous-domaines directs est demandée. Les options
+`--virustotal-max-pages` et `--virustotal-page-size` bornent la pagination. Les
+objets renvoyés alimentent directement `virustotal.csv` et ajoutent VirusTotal à
+`SourceSousDomaine` avant la résolution DNS.
+
+Le parcours nominal consomme deux requêtes par domaine racine connu : une pour
+son rapport et une pour la première page de sous-domaines. Avec le plafond public
+de 500 requêtes, cela couvre au plus 250 domaines par jour, avant pagination ou
+rapports supplémentaires. Un lot de 400 domaines doit donc être réparti sur
+plusieurs jours avec l'API publique ou exécuté avec un abonnement approprié.
+
+Pour analyser aussi individuellement les noms découverts par `crt.sh`,
+DNSDumpster, WhoisXML API ou les tests classiques :
+
+```powershell
+python .\domain_inventory.py --input .\domaines.txt --virustotal `
+  --virustotal-analyze-discovered --virustotal-max-extra-reports 20
+```
+
+Chaque rapport individuel consomme une requête. Le plafond supplémentaire vaut
+20 par défaut. Le compteur persistant `virustotal-usage.json` se réinitialise au
+changement de jour UTC. `--virustotal-today-count` permet de renseigner les
+appels effectués ailleurs. Une erreur ou un HTTP 429 désactive cette source pour
+la suite du lot sans interrompre les autres collectes.
+
+Le verdict est une synthèse des champs `last_analysis_stats` documentés pour les
+[objets Domain](https://docs.virustotal.com/reference/domains-object). Il ne
+constitue pas une preuve : les nombres de moteurs malveillants et suspects, la
+réputation communautaire, les catégories et la date d'analyse restent exposés
+pour permettre une interprétation humaine. Le seuil de signalement malveillant
+est configurable avec `--virustotal-malicious-threshold`.
+
 Pour un seul domaine :
 
 ```powershell
@@ -377,7 +443,7 @@ Options utiles : `--workers 12`, `--delay 0.35` et `--retries 3`. Pour 400 domai
 
 ### Remplacement ou fusion des résultats
 
-Le comportement par défaut reste le remplacement complet des neuf CSV sources :
+Le comportement par défaut reste le remplacement complet des dix CSV sources :
 
 ```powershell
 python .\domain_inventory.py --input .\domaines.txt --output .\resultats --output-mode overwrite
@@ -535,6 +601,10 @@ propriétaire et exposerait inutilement les clés au processus privilégié.
   les dates UTC de première et dernière vue du fournisseur. Le CSV est créé
   même lorsque la source est désactivée afin de conserver un schéma de sortie
   stable.
+- `virustotal.csv` : rapport VirusTotal du domaine racine et des sous-domaines
+  interrogés, avec compteurs de moteurs, réputation communautaire, catégories,
+  date d'analyse et verdict synthétique. Une absence dans VirusTotal est conservée
+  avec `StatutRequete=NonTrouve` et `Verdict=NonEvalue`.
 - `enregistrements-dns.csv` : résultats consolidés de Google Public DNS et
   DNSDumpster pour MX, TXT/SPF, NS, CNAME, AAAA, DMARC et DKIM. Une même valeur
   vue par les deux sources n'apparaît qu'une fois et la colonne `Source` mentionne
@@ -566,6 +636,12 @@ donc inchangée pour une observation historique absente de l'exécution courante
 Pour un ancien CSV sans colonnes d'observation, elle suit la règle de migration
 décrite plus haut : la date de modification du fichier sert de date historique
 initiale et constitue donc une approximation documentée.
+
+Lorsque VirusTotal est activé, `inventaire-global.csv` expose aussi
+`VirusTotalVerdict`, `VirusTotalMalicieux`, `VirusTotalSuspect`,
+`VirusTotalReputation` et `VirusTotalDerniereAnalyse`. Ces colonnes sont jointes
+sur `DomaineRacine + SousDomaine` et restent vides si aucun rapport n'a été
+demandé ou trouvé.
 
 ## Générer un rapport HTML complet
 
@@ -599,7 +675,7 @@ Le rapport contient :
 - une synthèse chiffrée de l'exécution ;
 - l'état de présence de chaque fichier attendu ;
 - tous les champs de `resume.json` ;
-- l'intégralité des lignes des dix CSV ;
+- l'intégralité des lignes des onze CSV ;
 - le nombre de ports Nmap ouverts observés ;
 - les limites méthodologiques et les avertissements d'attribution.
 
@@ -615,6 +691,9 @@ Sans clés optionnelles, il s'agit de `rdap.org`, `crt.sh`, `dns.google` et
 `ipwho.is`. Avec les
 enrichissements, les domaines sont aussi transmis à DNSDumpster, who.is et/ou
 WhoisXML API selon les options activées.
+VirusTotal reçoit également les domaines lorsque `--virustotal` est activé.
+Une requête de rapport consulte les données déjà connues du service ; ce script
+ne soumet aucun fichier ni URL à une nouvelle analyse.
 Pour une confidentialité totale, il faut remplacer ces sources par des services
 internes ou des miroirs maîtrisés.
 

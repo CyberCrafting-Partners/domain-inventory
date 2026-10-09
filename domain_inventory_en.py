@@ -8,14 +8,14 @@ The program accepts one or more domains and performs four main stages:
 3. resolve the discovered names to A and AAAA records;
 4. attribute IP addresses to an ASN and an apparent network operator.
 
-Results are written to ten CSV files and one JSON summary. PyYAML is used for
+Results are written to eleven CSV files and one JSON summary. PyYAML is used for
 configuration. The script performs no DNS brute force. A bounded TCP Nmap scan
 can be enabled explicitly with ``--nmap`` and is disabled by default.
 
 Warning: queries send searched domains to ``rdap.org`` and ``crt.sh``, and IP
-addresses to ``rdap.org`` and ``ipwho.is``. When enabled, WhoisXML API also
-receives the domains. Contacts absent from an RDAP response cannot be
-reconstructed by this program.
+addresses to ``rdap.org`` and ``ipwho.is``. When enabled, WhoisXML API and
+VirusTotal also receive the domains. Contacts absent from an RDAP response
+cannot be reconstructed by this program.
 """
 
 from __future__ import annotations
@@ -42,6 +42,13 @@ from typing import Any, Iterable
 
 from global_output import build_global_rows, write_global_csv
 from output_merge import write_inventory_csv, write_json_atomic
+from virustotal_enrichment import (
+    VIRUSTOTAL_FIELDS,
+    get_domain_report as get_virustotal_domain_report,
+    get_subdomains_page as get_virustotal_subdomains_page,
+    load_daily_usage as load_virustotal_usage,
+    save_daily_usage as save_virustotal_usage,
+)
 
 try:
     import yaml
@@ -1346,7 +1353,7 @@ def apply_yaml_config(config: dict[str, Any]) -> dict[str, str]:
         DEFAULT_NMAP_PORTS = tuple(parse_port_list(",".join(str(port) for port in ports)))
 
     result: dict[str, str] = {}
-    for field in ("dnsdumpster", "whois", "whoisxmlapi"):
+    for field in ("dnsdumpster", "whois", "whoisxmlapi", "virustotal"):
         value = api_keys.get(field, "")
         if value is None:
             value = ""
@@ -1480,6 +1487,75 @@ def main() -> int:
         help="Persistent local fallback counter for WhoisXML API",
     )
     parser.add_argument(
+        "--virustotal",
+        action="store_true",
+        help=(
+            "Enable domain discovery and reputation analysis through the "
+            "VirusTotal API v3."
+        ),
+    )
+    parser.add_argument(
+        "--virustotal-plan",
+        choices=("public", "premium"),
+        default="public",
+        help="VirusTotal quota profile (default: public)",
+    )
+    parser.add_argument(
+        "--virustotal-max-pages",
+        type=int,
+        default=1,
+        help="Direct-subdomain pages per root domain (default: 1)",
+    )
+    parser.add_argument(
+        "--virustotal-page-size",
+        type=int,
+        default=10,
+        help="Objects requested per VirusTotal page (default: 10; local maximum: 100)",
+    )
+    parser.add_argument(
+        "--virustotal-analyze-discovered",
+        action="store_true",
+        help=(
+            "Also query individual reports for subdomains found by other sources, "
+            "within the configured limit."
+        ),
+    )
+    parser.add_argument(
+        "--virustotal-max-extra-reports",
+        type=int,
+        default=20,
+        help="Maximum additional individual reports per run (default: 20)",
+    )
+    parser.add_argument(
+        "--virustotal-malicious-threshold",
+        type=int,
+        default=1,
+        help="Minimum malicious-engine count for a flagged verdict (default: 1)",
+    )
+    parser.add_argument(
+        "--virustotal-daily-quota",
+        type=int,
+        default=500,
+        help="Daily request ceiling (public API default: 500)",
+    )
+    parser.add_argument(
+        "--virustotal-today-count",
+        type=int,
+        default=0,
+        help="VirusTotal requests already consumed today in UTC",
+    )
+    parser.add_argument(
+        "--virustotal-min-interval",
+        type=float,
+        default=15.0,
+        help="Minimum interval between requests in seconds (public default: 15)",
+    )
+    parser.add_argument(
+        "--virustotal-state-file",
+        default=str(default_state_directory() / "virustotal-usage.json"),
+        help="Persistent local VirusTotal request counter",
+    )
+    parser.add_argument(
         "--nmap",
         action="store_true",
         help=(
@@ -1519,6 +1595,9 @@ def main() -> int:
     whoisxml_api_key = os.environ.get(
         "WHOISXMLAPI_API_KEY", yaml_api_keys["whoisxmlapi"]
     ).strip()
+    virustotal_api_key = os.environ.get(
+        "VIRUSTOTAL_API_KEY", yaml_api_keys["virustotal"]
+    ).strip()
 
     if not args.input and not args.domain:
         parser.error("use --input or at least one --domain")
@@ -1535,6 +1614,16 @@ def main() -> int:
         or args.whoisxml_max_pages > 100
         or args.whoisxml_drs_credit_limit < 1
         or args.whoisxml_credits_used < 0
+        or args.virustotal_max_pages < 1
+        or args.virustotal_max_pages > 100
+        or args.virustotal_page_size < 1
+        or args.virustotal_page_size > 100
+        or args.virustotal_max_extra_reports < 0
+        or args.virustotal_max_extra_reports > 10000
+        or args.virustotal_malicious_threshold < 1
+        or args.virustotal_daily_quota < 1
+        or args.virustotal_today_count < 0
+        or args.virustotal_min_interval < 0
         or args.nmap_max_ips < 1
         or args.nmap_max_ips > 4096
     ):
@@ -1543,6 +1632,19 @@ def main() -> int:
         parser.error(
             "--whoisxml-subdomains requires WHOISXMLAPI_API_KEY or "
             "api_keys.whoisxmlapi in YAML"
+        )
+    if args.virustotal and not virustotal_api_key:
+        parser.error(
+            "--virustotal requires VIRUSTOTAL_API_KEY or api_keys.virustotal "
+            "in YAML"
+        )
+    if (
+        args.virustotal
+        and args.virustotal_plan == "public"
+        and args.virustotal_min_interval < 15.0
+    ):
+        parser.error(
+            "the public VirusTotal profile requires --virustotal-min-interval >= 15"
         )
 
     domains = load_domains(args)
@@ -1557,6 +1659,7 @@ def main() -> int:
     whois_contact_rows: list[dict[str, Any]] = []
     dnsdumpster_rows: list[dict[str, Any]] = []
     whoisxml_subdomain_rows: list[dict[str, Any]] = []
+    virustotal_rows: list[dict[str, Any]] = []
     domain_dns_rows: list[dict[str, Any]] = []
     discovered_by_root: dict[str, dict[str, set[str]]] = {}
     dnsdumpster_state_file = prepare_state_file(
@@ -1588,6 +1691,46 @@ def main() -> int:
         whoisxml_official_remaining = get_whoisxml_drs_balance(
             whoisxml_api_key, args.delay
         )
+    virustotal_state_file = prepare_state_file(
+        Path(args.virustotal_state_file).expanduser().resolve(),
+        "virustotal-usage.json",
+    )
+    virustotal_usage = load_virustotal_usage(
+        virustotal_state_file, args.virustotal_today_count
+    )
+    virustotal_requests_attempted = 0
+    virustotal_extra_reports = 0
+    virustotal_skipped_quota = 0
+    virustotal_disabled_after_error = False
+    virustotal_last_request = 0.0
+
+    def virustotal_request(
+        url: str, service: str
+    ) -> tuple[Any | None, dict[str, str], int | None]:
+        """Apply quota, pacing, and persistence before a VirusTotal call."""
+        nonlocal virustotal_usage, virustotal_requests_attempted
+        nonlocal virustotal_skipped_quota, virustotal_last_request
+        if virustotal_usage >= args.virustotal_daily_quota:
+            virustotal_skipped_quota += 1
+            return None, {}, 429
+        wait = args.virustotal_min_interval - (
+            time.monotonic() - virustotal_last_request
+        )
+        if virustotal_last_request and wait > 0:
+            time.sleep(wait)
+        virustotal_usage += 1
+        virustotal_requests_attempted += 1
+        save_virustotal_usage(
+            virustotal_state_file,
+            virustotal_usage,
+            args.virustotal_daily_quota,
+            args.virustotal_plan,
+        )
+        data, headers, status = http_json_response(
+            url, 1, args.delay, service, {"x-apikey": virustotal_api_key}
+        )
+        virustotal_last_request = time.monotonic()
+        return data, headers, status
     dkim_selectors = tuple(
         dict.fromkeys(
             selector.strip().lower()
@@ -1602,7 +1745,8 @@ def main() -> int:
         "Optional sources: "
         f"DNSDumpster={'enabled' if dnsdumpster_api_key else 'disabled (missing key)'}, "
         f"who.is={'enabled' if whois_api_key else 'disabled (missing key)'}, "
-        f"WhoisXML Subdomains={'enabled' if args.whoisxml_subdomains else 'disabled'}",
+        f"WhoisXML Subdomains={'enabled' if args.whoisxml_subdomains else 'disabled'}, "
+        f"VirusTotal={'enabled' if args.virustotal else 'disabled'}",
         flush=True,
     )
     if dnsdumpster_api_key:
@@ -1633,6 +1777,21 @@ def main() -> int:
                 f"local counter {whoisxml_usage}/"
                 f"{args.whoisxml_drs_credit_limit} credit(s).",
                 flush=True,
+            )
+    if args.virustotal:
+        print(
+            "VirusTotal "
+            f"({args.virustotal_plan}): {virustotal_usage}/"
+            f"{args.virustotal_daily_quota} request(s) already counted today "
+            "in UTC.",
+            flush=True,
+        )
+        if args.virustotal_plan == "public":
+            print(
+                "WARNING: the VirusTotal public API is limited to uses allowed "
+                "by its terms and must not be used in commercial products or "
+                "non-contributive business workflows.",
+                file=sys.stderr,
             )
 
     # Stage 1: RDAP metadata/contacts and passive name discovery.
@@ -1870,6 +2029,78 @@ def main() -> int:
             source_map.setdefault(f"{prefix}.{root}", set()).add(
                 "common subdomain test"
             )
+        if args.virustotal and not virustotal_disabled_after_error:
+            analyzed_by_virustotal: set[str] = set()
+            root_row, vt_status = get_virustotal_domain_report(
+                root,
+                root,
+                "root domain",
+                virustotal_request,
+                normalize_domain,
+                args.virustotal_malicious_threshold,
+            )
+            if root_row:
+                virustotal_rows.append(root_row)
+                analyzed_by_virustotal.add(root)
+            if vt_status not in {200, 404}:
+                virustotal_disabled_after_error = True
+            elif vt_status == 200:
+                cursor = ""
+                seen_cursors: set[str] = set()
+                for _ in range(args.virustotal_max_pages):
+                    (
+                        vt_names,
+                        vt_rows,
+                        next_cursor,
+                        vt_status,
+                    ) = get_virustotal_subdomains_page(
+                        root,
+                        cursor,
+                        args.virustotal_page_size,
+                        virustotal_request,
+                        normalize_domain,
+                        args.virustotal_malicious_threshold,
+                    )
+                    if vt_status not in {200, 404}:
+                        virustotal_disabled_after_error = True
+                        break
+                    for name in vt_names:
+                        source_map.setdefault(name, set()).add("VirusTotal")
+                    analyzed_by_virustotal.update(vt_names)
+                    virustotal_rows.extend(vt_rows)
+                    if vt_status == 404 or not next_cursor or next_cursor in seen_cursors:
+                        break
+                    seen_cursors.add(next_cursor)
+                    cursor = next_cursor
+
+            if args.virustotal_analyze_discovered and not virustotal_disabled_after_error:
+                for name in sorted(source_map):
+                    if name in analyzed_by_virustotal:
+                        continue
+                    if virustotal_extra_reports >= args.virustotal_max_extra_reports:
+                        break
+                    discovery_source = ", ".join(sorted(source_map[name]))
+                    row, vt_status = get_virustotal_domain_report(
+                        root,
+                        name,
+                        discovery_source,
+                        virustotal_request,
+                        normalize_domain,
+                        args.virustotal_malicious_threshold,
+                    )
+                    virustotal_extra_reports += 1
+                    if row:
+                        virustotal_rows.append(row)
+                    analyzed_by_virustotal.add(name)
+                    if vt_status not in {200, 404}:
+                        virustotal_disabled_after_error = True
+                        break
+            if virustotal_disabled_after_error:
+                print(
+                    "WARNING: VirusTotal is disabled for the rest of this run "
+                    "after an error or quota limit; other sources continue.",
+                    file=sys.stderr,
+                )
         discovered_by_root[root] = source_map
 
         print(f"[{root}] DNS and email checks...", flush=True)
@@ -2029,6 +2260,14 @@ def main() -> int:
         args.output_mode,
         execution_utc,
     )
+    virustotal_rows = write_inventory_csv(
+        output / "virustotal.csv",
+        virustotal_rows,
+        VIRUSTOTAL_FIELDS,
+        ("DomaineRacine", "DomaineAnalyse"),
+        args.output_mode,
+        execution_utc,
+    )
     domain_dns_rows = write_inventory_csv(output / "enregistrements-dns.csv", domain_dns_rows, [
         "Domaine", "NomInterroge", "TypeDNS", "Categorie", "Valeur", "TTL",
         "CodeDNS", "Statut", "Source",
@@ -2046,7 +2285,8 @@ def main() -> int:
         "ServiceIndicatif", "Analyse",
     ], ("IP", "Protocole", "Port"), args.output_mode, execution_utc)
     global_rows = build_global_rows(
-        domain_rows, whois_contact_rows, dns_rows, ip_rows, nmap_rows
+        domain_rows, whois_contact_rows, dns_rows, ip_rows, nmap_rows,
+        virustotal_rows,
     )
     write_global_csv(output / "inventaire-global.csv", global_rows)
 
@@ -2067,7 +2307,8 @@ def main() -> int:
         "services_externes": ["rdap.org", "crt.sh", "ipwho.is", "dns.google"]
         + (["dnsdumpster.com"] if dnsdumpster_api_key else [])
         + (["who.is"] if whois_api_key else [])
-        + (["subdomains.whoisxmlapi.com"] if args.whoisxml_subdomains else []),
+        + (["subdomains.whoisxmlapi.com"] if args.whoisxml_subdomains else [])
+        + (["virustotal.com"] if args.virustotal else []),
         "dnsdumpster_active": bool(dnsdumpster_api_key),
         "dnsdumpster_account": "Free User" if dnsdumpster_api_key else None,
         "dnsdumpster_daily_quota": args.dnsdumpster_daily_quota,
@@ -2097,6 +2338,24 @@ def main() -> int:
         "whoisxml_disabled_after_request_error": whoisxml_disabled_after_error,
         "whoisxml_state_file": str(whoisxml_state_file),
         "whoisxml_subdomains_records": len(whoisxml_subdomain_rows),
+        "virustotal_active": bool(args.virustotal),
+        "virustotal_plan": args.virustotal_plan if args.virustotal else None,
+        "virustotal_daily_quota": args.virustotal_daily_quota,
+        "virustotal_today_count_final": virustotal_usage,
+        "virustotal_remaining_local": max(
+            0, args.virustotal_daily_quota - virustotal_usage
+        ),
+        "virustotal_requests_attempted": virustotal_requests_attempted,
+        "virustotal_requests_skipped_quota": virustotal_skipped_quota,
+        "virustotal_disabled_after_error_or_quota": virustotal_disabled_after_error,
+        "virustotal_min_interval_seconds": args.virustotal_min_interval,
+        "virustotal_max_pages_per_domain": args.virustotal_max_pages,
+        "virustotal_page_size": args.virustotal_page_size,
+        "virustotal_analyze_discovered": bool(args.virustotal_analyze_discovered),
+        "virustotal_extra_reports": virustotal_extra_reports,
+        "virustotal_malicious_threshold": args.virustotal_malicious_threshold,
+        "virustotal_state_file": str(virustotal_state_file),
+        "virustotal_records": len(virustotal_rows),
         "contacts_rdap_publics": len(rdap_contact_rows),
         "contacts_whois_publics": len(whois_contact_rows),
         "enregistrements_dnsdumpster": len(dnsdumpster_rows),

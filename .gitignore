@@ -9,6 +9,7 @@ config.local.yaml
 .dnsdumpster-usage.json
 .whois-usage.json
 .whoisxmlapi-usage.json
+.virustotal-usage.json
 .domain-inventory-state/
 
 # Résultats produits par le script

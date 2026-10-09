@@ -24,6 +24,7 @@ EXPECTED_FILES = (
     "contacts-whois.csv",
     "dnsdumpster.csv",
     "whoisxml-subdomains.csv",
+    "virustotal.csv",
     "enregistrements-dns.csv",
     "sous-domaines-dns.csv",
     "adresses-ip.csv",
@@ -63,6 +64,7 @@ TEXT = {
             "contacts-whois.csv": "Contacts who.is",
             "dnsdumpster.csv": "Enrichissement DNSDumpster",
             "whoisxml-subdomains.csv": "Sous-domaines WhoisXML API",
+            "virustotal.csv": "Réputation VirusTotal",
             "enregistrements-dns.csv": "Enregistrements DNS et messagerie",
             "sous-domaines-dns.csv": "Sous-domaines et résolution DNS",
             "adresses-ip.csv": "Adresses IP et hébergeurs probables",
@@ -77,6 +79,10 @@ TEXT = {
             "whoisxml-subdomains.csv": (
                 "Sous-domaines passifs WhoisXML API et dates de première/dernière "
                 "vue chez le fournisseur."
+            ),
+            "virustotal.csv": (
+                "Statistiques d'analyse, réputation communautaire et signaux de "
+                "malveillance ou de suspicion fournis par VirusTotal."
             ),
             "enregistrements-dns.csv": "Résultats MX, TXT/SPF, NS, CNAME, AAAA, DMARC et DKIM.",
             "sous-domaines-dns.csv": "Noms découverts ou testés, adresses résolues et indicateur wildcard.",
@@ -124,6 +130,7 @@ TEXT = {
             "contacts-whois.csv": "who.is contacts",
             "dnsdumpster.csv": "DNSDumpster enrichment",
             "whoisxml-subdomains.csv": "WhoisXML API subdomains",
+            "virustotal.csv": "VirusTotal reputation",
             "enregistrements-dns.csv": "DNS and email records",
             "sous-domaines-dns.csv": "Subdomains and DNS resolution",
             "adresses-ip.csv": "IP addresses and probable hosting providers",
@@ -137,6 +144,10 @@ TEXT = {
             "dnsdumpster.csv": "Hosts and network data returned by DNSDumpster.",
             "whoisxml-subdomains.csv": (
                 "Passive WhoisXML API subdomains and provider first/last-seen dates."
+            ),
+            "virustotal.csv": (
+                "Analysis statistics, community reputation, and malicious or "
+                "suspicious signals returned by VirusTotal."
             ),
             "enregistrements-dns.csv": "MX, TXT/SPF, NS, CNAME, AAAA, DMARC, and DKIM results.",
             "sous-domaines-dns.csv": "Discovered or tested names, resolved addresses, and wildcard indicator.",

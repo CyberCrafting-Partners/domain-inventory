@@ -54,3 +54,5 @@ api_keys:
   # WhoisXML API Subdomains Lookup. Préférez la variable
   # WHOISXMLAPI_API_KEY sur un poste partagé.
   whoisxmlapi: ""
+  # VirusTotal API v3. Vérifiez que le plan choisi autorise votre cas d'usage.
+  virustotal: ""

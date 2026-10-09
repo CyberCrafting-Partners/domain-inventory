@@ -7,9 +7,9 @@ Documentation française : [README.md](README.md). Script français :
 and network-operator information. It can optionally run a bounded TCP connect
 Nmap scan against discovered IP addresses.
 
-Keep `output_merge.py` and `global_output.py` in the same directory as
+Keep `output_merge.py`, `global_output.py`, and `virustotal_enrichment.py` in the same directory as
 `domain_inventory.py` and `domain_inventory_en.py`. Both main scripts import
-these modules for historical merging and the global view.
+these modules for historical merging, the global view, and VirusTotal support.
 
 The French and English scripts provide the same collection features and accept
 the same command-line options. The English version keeps the established CSV
@@ -26,7 +26,8 @@ messages are in English.
 - Nmap only when `--nmap` is enabled.
 
 The passive sources include `rdap.org`, `crt.sh`, `dns.google`, and `ipwho.is`.
-DNSDumpster, who.is, and WhoisXML API are optional and require personal API keys.
+DNSDumpster, who.is, WhoisXML API, and VirusTotal are optional and require
+personal API keys.
 
 ## Installation on Windows
 
@@ -97,7 +98,7 @@ Useful options include `--workers 12`, `--delay 0.35`, and `--retries 3`.
 
 ## Overwrite or merge results
 
-The default behavior still replaces all nine source CSV files:
+The default behavior still replaces all ten source CSV files:
 
 ```bash
 python3 ./domain_inventory_en.py --input ./domains.txt --output ./results --output-mode overwrite
@@ -166,7 +167,7 @@ The YAML configuration controls:
 - common subdomain prefixes;
 - default DKIM selectors;
 - default Nmap ports;
-- DNSDumpster, who.is, and WhoisXML API keys.
+- DNSDumpster, who.is, WhoisXML API, and VirusTotal API keys.
 
 Minimal API-key section:
 
@@ -175,6 +176,7 @@ api_keys:
   dnsdumpster: "your_dnsdumpster_key"
   whois: "your_whois_key"
   whoisxmlapi: "your_whoisxmlapi_key"
+  virustotal: "your_virustotal_key"
 ```
 
 `config.yaml` and `config.local.yaml` are ignored by Git. Never put real keys in
@@ -198,10 +200,12 @@ Windows PowerShell:
 $env:DNSDUMPSTER_API_KEY = "your_dnsdumpster_key"
 $env:WHOIS_API_KEY = "your_whois_key"
 $env:WHOISXMLAPI_API_KEY = "your_whoisxmlapi_key"
+$env:VIRUSTOTAL_API_KEY = "your_virustotal_key"
 python .\domain_inventory_en.py --input .\domains.txt --output .\results
 Remove-Item Env:DNSDUMPSTER_API_KEY
 Remove-Item Env:WHOIS_API_KEY
 Remove-Item Env:WHOISXMLAPI_API_KEY
+Remove-Item Env:VIRUSTOTAL_API_KEY
 ```
 
 Bash/Linux:
@@ -210,8 +214,9 @@ Bash/Linux:
 export DNSDUMPSTER_API_KEY="your_dnsdumpster_key"
 export WHOIS_API_KEY="your_whois_key"
 export WHOISXMLAPI_API_KEY="your_whoisxmlapi_key"
+export VIRUSTOTAL_API_KEY="your_virustotal_key"
 python3 ./domain_inventory_en.py --input ./domains.txt --output ./results
-unset DNSDUMPSTER_API_KEY WHOIS_API_KEY WHOISXMLAPI_API_KEY
+unset DNSDUMPSTER_API_KEY WHOIS_API_KEY WHOISXMLAPI_API_KEY VIRUSTOTAL_API_KEY
 ```
 
 Keys are not written to CSV files, the JSON summary, or normal program logs.
@@ -228,10 +233,12 @@ Persistent counters are stored at:
 
 - Windows: `%LOCALAPPDATA%\DomainInventory\dnsdumpster-usage.json` and
   `%LOCALAPPDATA%\DomainInventory\whois-usage.json`; WhoisXML API additionally
-  uses `%LOCALAPPDATA%\DomainInventory\whoisxmlapi-usage.json` when enabled;
+  uses `%LOCALAPPDATA%\DomainInventory\whoisxmlapi-usage.json`, and VirusTotal
+  uses `%LOCALAPPDATA%\DomainInventory\virustotal-usage.json` when enabled;
 - Linux: `~/.domain-inventory/dnsdumpster-usage.json` and
   `~/.domain-inventory/whois-usage.json`; WhoisXML API additionally uses
-  `~/.domain-inventory/whoisxmlapi-usage.json` when enabled.
+  `~/.domain-inventory/whoisxmlapi-usage.json`, and VirusTotal uses
+  `~/.domain-inventory/virustotal-usage.json` when enabled.
 
 Counter files contain no API key or domain. Provide dashboard usage when calls
 were made from another tool:
@@ -287,6 +294,55 @@ Provider `firstSeen` and `lastSeen` values are preserved in
 `whoisxml-subdomains.csv`. They do not replace `DerniereDecouverte` in
 `inventaire-global.csv`, which remains the time this script actually rediscovered
 and resolved the DNS observation.
+
+## Optional VirusTotal discovery and reputation analysis
+
+`--virustotal` enables API v3. For each root domain, the script requests its
+report and then the `subdomains` relationship. That relationship returns direct
+subdomains and their domain objects; it is
+[not recursive](https://docs.virustotal.com/reference/domain-object-subdomains).
+
+```bash
+export VIRUSTOTAL_API_KEY="your_virustotal_key"
+python3 ./domain_inventory_en.py --input ./domains.txt \
+  --output ./results --virustotal --virustotal-plan public
+```
+
+The `public` profile enforces at least 15 seconds between requests and a local
+500-request UTC daily ceiling, matching the official
+[4 requests/minute and 500 requests/day limits](https://docs.virustotal.com/reference/public-vs-premium-api).
+VirusTotal also states that the public API must not be used in commercial
+products or certain non-contributive business workflows. Confirm that your use
+is permitted. Select `--virustotal-plan premium` only with a corresponding
+license and configure the interval and ceiling according to that contract.
+
+The default requests one page of 10 direct subdomains. Pagination is bounded by
+`--virustotal-max-pages` and `--virustotal-page-size`. Returned objects populate
+`virustotal.csv` and add VirusTotal to `SourceSousDomaine` before DNS resolution.
+
+The normal path consumes two requests per known root domain: one report and one
+first subdomain page. The public 500-request ceiling therefore covers at most
+250 root domains per day before pagination or extra reports. A 400-domain batch
+must be split across days on the public API or run under an appropriate license.
+
+To query individual reports for names found through other sources:
+
+```bash
+python3 ./domain_inventory_en.py --input ./domains.txt --virustotal \
+  --virustotal-analyze-discovered --virustotal-max-extra-reports 20
+```
+
+Every individual report consumes one request. The persistent
+`virustotal-usage.json` counter resets on a UTC date change, while
+`--virustotal-today-count` accounts for calls made elsewhere. An error or HTTP
+429 disables this source for the remaining batch without stopping other sources.
+
+The verdict summarizes the documented `last_analysis_stats` fields on
+[Domain objects](https://docs.virustotal.com/reference/domains-object). It is
+not proof of maliciousness: malicious/suspicious engine counts, community
+reputation, categories, and analysis time remain available for human review.
+Configure the malicious signal threshold with
+`--virustotal-malicious-threshold`.
 
 ## DNS and email checks
 
@@ -362,6 +418,10 @@ target. "Low impact" does not mean invisible.
 - `whoisxml-subdomains.csv`: WhoisXML API subdomains with provider first-seen
   and last-seen UTC timestamps. The CSV is created even when the source is
   disabled so the output schema remains stable;
+- `virustotal.csv`: VirusTotal reports for queried root domains and subdomains,
+  including engine counts, community reputation, categories, analysis time, and
+  a synthetic verdict. Unknown domains are retained with
+  `StatutRequete=NonTrouve` and `Verdict=NonEvalue`;
 - `enregistrements-dns.csv`: consolidated DNS and email checks;
 - `sous-domaines-dns.csv`: discovered/tested names and A/AAAA resolution;
 - `adresses-ip.csv`: ASN, operator, country, and probable hosting attribution;
@@ -390,6 +450,12 @@ unchanged for a historical observation missing from the current run.
 For a legacy CSV without observation columns, it follows the migration rule
 described above: the file modification time becomes the initial historical
 timestamp and is therefore a documented approximation.
+
+When VirusTotal is enabled, `inventaire-global.csv` also contains
+`VirusTotalVerdict`, `VirusTotalMalicieux`, `VirusTotalSuspect`,
+`VirusTotalReputation`, and `VirusTotalDerniereAnalyse`. These columns join on
+`DomaineRacine + SousDomaine` and remain empty when no report was requested or
+found.
 
 ## Generate a complete HTML report
 
@@ -423,7 +489,7 @@ The report includes:
 - execution overview cards;
 - availability status for every expected file;
 - every field from `resume.json`;
-- every row from all ten CSV files;
+- every row from all eleven CSV files;
 - the number of observed open Nmap ports;
 - methodological and hosting-attribution warnings.
 
@@ -435,8 +501,10 @@ without preventing the remaining sections from being generated.
 
 Domains and discovered names are transmitted to enabled public services.
 Without optional keys, these services are `rdap.org`, `crt.sh`, `dns.google`,
-and `ipwho.is`. Enabling DNSDumpster, who.is, or WhoisXML API also sends domains to those
-providers.
+and `ipwho.is`. Enabling DNSDumpster, who.is, or WhoisXML API also sends domains
+to those providers. Enabling `--virustotal` sends domains to VirusTotal. The
+script only reads existing reports; it does not submit files or URLs for a new
+analysis.
 
 RDAP contact data may be redacted. Certificate Transparency logs are not an
 exhaustive subdomain inventory. An IP may belong to a CDN, reverse proxy, or

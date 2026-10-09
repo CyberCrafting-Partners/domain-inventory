@@ -16,6 +16,11 @@ GLOBAL_FIELDS = [
     "Resolu",
     "SourceSousDomaine",
     "DerniereDecouverte",
+    "VirusTotalVerdict",
+    "VirusTotalMalicieux",
+    "VirusTotalSuspect",
+    "VirusTotalReputation",
+    "VirusTotalDerniereAnalyse",
     "AdresseIP",
     "Organisation",
     "ISP",
@@ -65,6 +70,7 @@ def build_global_rows(
     subdomain_rows: Iterable[dict[str, Any]],
     ip_rows: Iterable[dict[str, Any]],
     nmap_rows: Iterable[dict[str, Any]],
+    virustotal_rows: Iterable[dict[str, Any]] = (),
 ) -> list[dict[str, str]]:
     """Join normalized datasets at domain, subdomain, IP, and Nmap-port grain."""
     domains = {
@@ -83,6 +89,11 @@ def build_global_rows(
         ip = _text(row.get("IP"))
         if ip:
             nmap_by_ip.setdefault(ip, []).append(row)
+    virustotal = {
+        (_text(row.get("DomaineRacine")), _text(row.get("DomaineAnalyse"))): row
+        for row in virustotal_rows
+        if _text(row.get("DomaineRacine")) and _text(row.get("DomaineAnalyse"))
+    }
 
     result: list[dict[str, str]] = []
     seen: set[tuple[str, ...]] = set()
@@ -100,6 +111,7 @@ def build_global_rows(
         ip = _text(subdomain.get("IP"))
         domain = domains.get(root, {})
         attribution = ips.get(ip, {})
+        threat = virustotal.get((root, _text(subdomain.get("Nom"))), {})
         scans = nmap_by_ip.get(ip) or [{}]
         for scan in sorted(
             scans,
@@ -119,6 +131,13 @@ def build_global_rows(
                 # The global discovery date follows the DNS observation grain:
                 # root domain + subdomain + record type + resolved IP address.
                 "DerniereDecouverte": _text(subdomain.get("DerniereObservation")),
+                "VirusTotalVerdict": _text(threat.get("Verdict")),
+                "VirusTotalMalicieux": _text(threat.get("Malicieux")),
+                "VirusTotalSuspect": _text(threat.get("Suspect")),
+                "VirusTotalReputation": _text(threat.get("ReputationCommunaute")),
+                "VirusTotalDerniereAnalyse": _text(
+                    threat.get("DerniereAnalyseUTC")
+                ),
                 "AdresseIP": ip,
                 "Organisation": _text(attribution.get("Organisation")),
                 "ISP": _text(attribution.get("ISP")),
