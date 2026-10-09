@@ -26,7 +26,7 @@ messages are in English.
 - Nmap only when `--nmap` is enabled.
 
 The passive sources include `rdap.org`, `crt.sh`, `dns.google`, and `ipwho.is`.
-DNSDumpster and who.is are optional and require personal API keys.
+DNSDumpster, who.is, and WhoisXML API are optional and require personal API keys.
 
 ## Installation on Windows
 
@@ -97,7 +97,7 @@ Useful options include `--workers 12`, `--delay 0.35`, and `--retries 3`.
 
 ## Overwrite or merge results
 
-The default behavior still replaces all eight source CSV files:
+The default behavior still replaces all nine source CSV files:
 
 ```bash
 python3 ./domain_inventory_en.py --input ./domains.txt --output ./results --output-mode overwrite
@@ -166,7 +166,7 @@ The YAML configuration controls:
 - common subdomain prefixes;
 - default DKIM selectors;
 - default Nmap ports;
-- DNSDumpster and who.is API keys.
+- DNSDumpster, who.is, and WhoisXML API keys.
 
 Minimal API-key section:
 
@@ -174,6 +174,7 @@ Minimal API-key section:
 api_keys:
   dnsdumpster: "your_dnsdumpster_key"
   whois: "your_whois_key"
+  whoisxmlapi: "your_whoisxmlapi_key"
 ```
 
 `config.yaml` and `config.local.yaml` are ignored by Git. Never put real keys in
@@ -196,9 +197,11 @@ Windows PowerShell:
 ```powershell
 $env:DNSDUMPSTER_API_KEY = "your_dnsdumpster_key"
 $env:WHOIS_API_KEY = "your_whois_key"
+$env:WHOISXMLAPI_API_KEY = "your_whoisxmlapi_key"
 python .\domain_inventory_en.py --input .\domains.txt --output .\results
 Remove-Item Env:DNSDUMPSTER_API_KEY
 Remove-Item Env:WHOIS_API_KEY
+Remove-Item Env:WHOISXMLAPI_API_KEY
 ```
 
 Bash/Linux:
@@ -206,8 +209,9 @@ Bash/Linux:
 ```bash
 export DNSDUMPSTER_API_KEY="your_dnsdumpster_key"
 export WHOIS_API_KEY="your_whois_key"
+export WHOISXMLAPI_API_KEY="your_whoisxmlapi_key"
 python3 ./domain_inventory_en.py --input ./domains.txt --output ./results
-unset DNSDUMPSTER_API_KEY WHOIS_API_KEY
+unset DNSDUMPSTER_API_KEY WHOIS_API_KEY WHOISXMLAPI_API_KEY
 ```
 
 Keys are not written to CSV files, the JSON summary, or normal program logs.
@@ -216,14 +220,18 @@ Keys are not written to CSV files, the JSON summary, or normal program logs.
 
 The DNSDumpster Free User defaults are 50 requests per day with no more than
 one request every two seconds. The who.is Free defaults are 500 credits per UTC
-calendar month and one request per second.
+calendar month and one request per second. WhoisXML API uses a non-calendar DRS
+balance; the Subdomains Lookup price documented by the provider is 10 credits
+per requested page.
 
 Persistent counters are stored at:
 
 - Windows: `%LOCALAPPDATA%\DomainInventory\dnsdumpster-usage.json` and
-  `%LOCALAPPDATA%\DomainInventory\whois-usage.json`;
+  `%LOCALAPPDATA%\DomainInventory\whois-usage.json`; WhoisXML API additionally
+  uses `%LOCALAPPDATA%\DomainInventory\whoisxmlapi-usage.json` when enabled;
 - Linux: `~/.domain-inventory/dnsdumpster-usage.json` and
-  `~/.domain-inventory/whois-usage.json`.
+  `~/.domain-inventory/whois-usage.json`; WhoisXML API additionally uses
+  `~/.domain-inventory/whoisxmlapi-usage.json` when enabled.
 
 Counter files contain no API key or domain. Provide dashboard usage when calls
 were made from another tool:
@@ -249,6 +257,36 @@ python3 ./domain_inventory_en.py --input ./domains.txt --whois-source both
 ```
 
 The script checks the remaining local quota before every endpoint call.
+
+## Optional WhoisXML API subdomain discovery
+
+Subdomains Lookup remains disabled unless `--whoisxml-subdomains` is supplied.
+It complements `crt.sh`, DNSDumpster, and the common-name tests; every accepted
+name then follows the normal DNS-resolution pipeline.
+
+```bash
+export WHOISXMLAPI_API_KEY="your_whoisxmlapi_key"
+python3 ./domain_inventory_en.py --input ./domains.txt \
+  --output ./results --whoisxml-subdomains
+```
+
+The script first queries the [official balance endpoint](https://subdomains.whoisxmlapi.com/api/documentation/account-balance-information).
+If the DRS balance cannot be parsed, it uses the persistent
+`whoisxmlapi-usage.json` counter and the `--whoisxml-drs-credit-limit` and
+`--whoisxml-credits-used` fallback options. The provider documents
+[500 free DRS credits](https://subdomains.whoisxmlapi.com/api/documentation/making-requests)
+and a [10-credit cost per request](https://subdomains.whoisxmlapi.com/api/pricing).
+
+One page contains at most 10,000 results. The default is therefore one page per
+domain. `--whoisxml-max-pages 2` allows the next `searchAfter` page when enough
+credits remain. The request rate stays under the provider's
+[30 requests/second limit](https://subdomains.whoisxmlapi.com/api/documentation/making-requests).
+Paid page requests are never automatically retried.
+
+Provider `firstSeen` and `lastSeen` values are preserved in
+`whoisxml-subdomains.csv`. They do not replace `DerniereDecouverte` in
+`inventaire-global.csv`, which remains the time this script actually rediscovered
+and resolved the DNS observation.
 
 ## DNS and email checks
 
@@ -321,6 +359,9 @@ target. "Low impact" does not mean invisible.
 - `contacts-rdap.csv`: public RDAP entities and roles;
 - `contacts-whois.csv`: normalized who.is WHOIS/RDAP contacts;
 - `dnsdumpster.csv`: DNSDumpster hosts, IPs, PTRs, ASNs, and countries;
+- `whoisxml-subdomains.csv`: WhoisXML API subdomains with provider first-seen
+  and last-seen UTC timestamps. The CSV is created even when the source is
+  disabled so the output schema remains stable;
 - `enregistrements-dns.csv`: consolidated DNS and email checks;
 - `sous-domaines-dns.csv`: discovered/tested names and A/AAAA resolution;
 - `adresses-ip.csv`: ASN, operator, country, and probable hosting attribution;
@@ -382,7 +423,7 @@ The report includes:
 - execution overview cards;
 - availability status for every expected file;
 - every field from `resume.json`;
-- every row from all nine CSV files;
+- every row from all ten CSV files;
 - the number of observed open Nmap ports;
 - methodological and hosting-attribution warnings.
 
@@ -394,7 +435,7 @@ without preventing the remaining sections from being generated.
 
 Domains and discovered names are transmitted to enabled public services.
 Without optional keys, these services are `rdap.org`, `crt.sh`, `dns.google`,
-and `ipwho.is`. Enabling DNSDumpster or who.is also sends domains to those
+and `ipwho.is`. Enabling DNSDumpster, who.is, or WhoisXML API also sends domains to those
 providers.
 
 RDAP contact data may be redacted. Certificate Transparency logs are not an

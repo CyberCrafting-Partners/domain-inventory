@@ -23,6 +23,7 @@ EXPECTED_FILES = (
     "contacts-rdap.csv",
     "contacts-whois.csv",
     "dnsdumpster.csv",
+    "whoisxml-subdomains.csv",
     "enregistrements-dns.csv",
     "sous-domaines-dns.csv",
     "adresses-ip.csv",
@@ -61,6 +62,7 @@ TEXT = {
             "contacts-rdap.csv": "Contacts RDAP",
             "contacts-whois.csv": "Contacts who.is",
             "dnsdumpster.csv": "Enrichissement DNSDumpster",
+            "whoisxml-subdomains.csv": "Sous-domaines WhoisXML API",
             "enregistrements-dns.csv": "Enregistrements DNS et messagerie",
             "sous-domaines-dns.csv": "Sous-domaines et résolution DNS",
             "adresses-ip.csv": "Adresses IP et hébergeurs probables",
@@ -72,6 +74,10 @@ TEXT = {
             "contacts-rdap.csv": "Entités et rôles publiés par les services RDAP.",
             "contacts-whois.csv": "Contacts normalisés renvoyés par les endpoints who.is activés.",
             "dnsdumpster.csv": "Hôtes et données réseau renvoyés par DNSDumpster.",
+            "whoisxml-subdomains.csv": (
+                "Sous-domaines passifs WhoisXML API et dates de première/dernière "
+                "vue chez le fournisseur."
+            ),
             "enregistrements-dns.csv": "Résultats MX, TXT/SPF, NS, CNAME, AAAA, DMARC et DKIM.",
             "sous-domaines-dns.csv": "Noms découverts ou testés, adresses résolues et indicateur wildcard.",
             "adresses-ip.csv": "ASN, opérateur, pays et attribution probable de l’hébergement.",
@@ -117,6 +123,7 @@ TEXT = {
             "contacts-rdap.csv": "RDAP contacts",
             "contacts-whois.csv": "who.is contacts",
             "dnsdumpster.csv": "DNSDumpster enrichment",
+            "whoisxml-subdomains.csv": "WhoisXML API subdomains",
             "enregistrements-dns.csv": "DNS and email records",
             "sous-domaines-dns.csv": "Subdomains and DNS resolution",
             "adresses-ip.csv": "IP addresses and probable hosting providers",
@@ -128,6 +135,9 @@ TEXT = {
             "contacts-rdap.csv": "Entities and roles published by RDAP services.",
             "contacts-whois.csv": "Normalized contacts returned by enabled who.is endpoints.",
             "dnsdumpster.csv": "Hosts and network data returned by DNSDumpster.",
+            "whoisxml-subdomains.csv": (
+                "Passive WhoisXML API subdomains and provider first/last-seen dates."
+            ),
             "enregistrements-dns.csv": "MX, TXT/SPF, NS, CNAME, AAAA, DMARC, and DKIM results.",
             "sous-domaines-dns.csv": "Discovered or tested names, resolved addresses, and wildcard indicator.",
             "adresses-ip.csv": "ASN, operator, country, and probable hosting attribution.",

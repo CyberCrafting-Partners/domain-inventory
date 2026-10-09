@@ -51,3 +51,6 @@ nmap:
 api_keys:
   dnsdumpster: ""
   whois: ""
+  # WhoisXML API Subdomains Lookup. Préférez la variable
+  # WHOISXMLAPI_API_KEY sur un poste partagé.
+  whoisxmlapi: ""

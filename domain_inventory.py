@@ -8,14 +8,15 @@ Le programme prend un ou plusieurs domaines en entrée et exécute quatre étape
 3. résolution DNS A/AAAA des noms trouvés ;
 4. attribution des IP à un ASN et à un opérateur apparent.
 
-Les résultats sont écrits dans neuf CSV et un résumé JSON. Le script utilise
+Les résultats sont écrits dans dix CSV et un résumé JSON. Le script utilise
 PyYAML pour sa configuration. Il n'effectue aucun brute force DNS. Un scan Nmap
 TCP borné peut être activé explicitement avec ``--nmap`` ; il reste désactivé
 par défaut.
 
 Attention : les requêtes transmettent les domaines recherchés à ``rdap.org`` et
-``crt.sh``, et les IP à ``rdap.org`` et ``ipwho.is``. Les contacts absents d'une
-réponse RDAP ne peuvent pas être reconstitués par ce programme.
+``crt.sh``, et les IP à ``rdap.org`` et ``ipwho.is``. Si elle est activée, la
+source WhoisXML API reçoit aussi les domaines. Les contacts absents d'une réponse
+RDAP ne peuvent pas être reconstitués par ce programme.
 """
 
 from __future__ import annotations
@@ -756,6 +757,135 @@ def get_dnsdumpster_enrichment(
     return names, rows, dns_rows, rate_limit_from_headers(headers)
 
 
+def unix_timestamp_utc(value: Any) -> str:
+    """Convertit un timestamp Unix fournisseur en date ISO 8601 UTC."""
+    try:
+        timestamp = int(value)
+        if timestamp < 0:
+            return ""
+        return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError, OverflowError):
+        return ""
+
+
+def get_whoisxml_subdomains_page(
+    domain: str,
+    api_key: str,
+    search_after: str,
+    delay: float,
+) -> tuple[set[str], list[dict[str, Any]], str, int | None]:
+    """Interroge une page de l'API v2 Subdomains Lookup de WhoisXML API.
+
+    Une page contient au maximum 10 000 enregistrements. La clé est transmise
+    uniquement à l'API HTTPS et n'est jamais placée dans les fichiers de sortie.
+    Aucune reprise automatique n'est faite, car chaque requête peut coûter des
+    crédits DRS.
+    """
+    parameters = {
+        "apiKey": api_key,
+        "domainName": domain,
+        "outputFormat": "JSON",
+    }
+    if search_after:
+        parameters["searchAfter"] = search_after
+    url = "https://subdomains.whoisxmlapi.com/api/v2?" + urllib.parse.urlencode(
+        parameters
+    )
+    data, _, status = http_json_response(
+        url, 1, delay, "WhoisXML API Subdomains Lookup"
+    )
+    names: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    result = data.get("result") if isinstance(data, dict) else None
+    if not isinstance(result, dict):
+        return names, rows, "", status
+    records = result.get("records") or []
+    if not isinstance(records, list):
+        records = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        name = normalize_domain(str(record.get("domain") or ""))
+        if not name or not (name == domain or name.endswith(f".{domain}")):
+            continue
+        names.add(name)
+        rows.append(
+            {
+                "DomaineRacine": domain,
+                "SousDomaine": name,
+                "PremiereVueFournisseurUTC": unix_timestamp_utc(
+                    record.get("firstSeen")
+                ),
+                "DerniereVueFournisseurUTC": unix_timestamp_utc(
+                    record.get("lastSeen")
+                ),
+                "Source": "WhoisXML API Subdomains Lookup v2",
+            }
+        )
+    cursor = str(result.get("nextPageSearchAfter") or "").strip()
+    return names, rows, cursor, status
+
+
+def find_whoisxml_drs_balance(data: Any) -> int | None:
+    """Extrait prudemment un solde DRS d'une réponse de compte fournisseur.
+
+    La documentation publique décrit l'endpoint mais ne fige pas le schéma de
+    sa réponse. Seuls les nombres situés dans un objet explicitement identifié
+    comme Domain Research Suite/DRS sont donc acceptés.
+    """
+    if isinstance(data, list):
+        for item in data:
+            balance = find_whoisxml_drs_balance(item)
+            if balance is not None:
+                return balance
+        return None
+    if not isinstance(data, dict):
+        return None
+    labels = " ".join(
+        str(value).casefold()
+        for key, value in data.items()
+        if key.casefold() in {
+            "name", "product", "productname", "product_name", "description",
+            "service", "service_name", "productid", "product_id",
+        }
+        and isinstance(value, (str, int))
+    )
+    is_drs = "domain research" in labels or re.search(r"\bdrs\b", labels)
+    if is_drs:
+        for key in (
+            "creditsRemaining", "credits_remaining", "remainingCredits",
+            "remaining_credits", "balance", "credits", "currentBalance",
+            "current_balance",
+        ):
+            value = data.get(key)
+            try:
+                return max(0, int(value))
+            except (TypeError, ValueError):
+                pass
+    for key, value in data.items():
+        if key.casefold() in {"drs", "domainresearchsuite", "domain_research_suite"}:
+            try:
+                return max(0, int(value))
+            except (TypeError, ValueError):
+                nested = find_whoisxml_drs_balance(value)
+                if nested is not None:
+                    return nested
+        nested = find_whoisxml_drs_balance(value)
+        if nested is not None:
+            return nested
+    return None
+
+
+def get_whoisxml_drs_balance(api_key: str, delay: float) -> int | None:
+    """Lit le solde DRS officiel sans conserver la clé ni la réponse brute."""
+    url = (
+        "https://user.whoisxmlapi.com/user-service/account-balance?"
+        + urllib.parse.urlencode({"apiKey": api_key, "outputFormat": "JSON"})
+    )
+    data, _, _ = http_json_response(url, 1, delay, "solde DRS WhoisXML API")
+    return find_whoisxml_drs_balance(data)
+
+
 def consolidate_dns_records(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fusionne les observations DNS identiques provenant de plusieurs sources.
 
@@ -1066,6 +1196,39 @@ def save_whois_usage(state_file: Path, count: int, monthly_quota: int) -> None:
     temporary.replace(state_file)
 
 
+def load_whoisxml_usage(state_file: Path, reported_credits_used: int) -> int:
+    """Charge le compteur DRS local sans réinitialisation calendaire.
+
+    Les crédits gratuits WhoisXML API forment un solde partagé et non un quota
+    quotidien ou mensuel documenté. Le compteur persiste donc jusqu'à ce que
+    l'utilisateur change explicitement de fichier d'état ou de valeur fournie.
+    """
+    local_count = 0
+    try:
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        local_count = max(0, int(state.get("credits_attempted", 0)))
+    except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    return max(local_count, reported_credits_used)
+
+
+def save_whoisxml_usage(
+    state_file: Path, credits_used: int, credit_limit: int
+) -> None:
+    """Enregistre atomiquement le suivi local des crédits DRS tentés."""
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary = state_file.with_suffix(state_file.suffix + ".tmp")
+    payload = {
+        "account": "WhoisXML API Domain Research Suite",
+        "credits_attempted": credits_used,
+        "configured_credit_limit": credit_limit,
+        "credits_per_request": 10,
+        "updated_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temporary.replace(state_file)
+
+
 def load_domains(args: argparse.Namespace) -> list[str]:
     """Charge, normalise et déduplique les domaines des arguments utilisateur."""
     raw: list[str] = list(args.domain or [])
@@ -1189,7 +1352,7 @@ def apply_yaml_config(config: dict[str, Any]) -> dict[str, str]:
         DEFAULT_NMAP_PORTS = tuple(parse_port_list(",".join(str(port) for port in ports)))
 
     result: dict[str, str] = {}
-    for field in ("dnsdumpster", "whois"):
+    for field in ("dnsdumpster", "whois", "whoisxmlapi"):
         value = api_keys.get(field, "")
         if value is None:
             value = ""
@@ -1289,6 +1452,40 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--whoisxml-subdomains",
+        action="store_true",
+        help=(
+            "Active la détection passive via WhoisXML API Subdomains Lookup. "
+            "Chaque page coûte actuellement 10 crédits DRS."
+        ),
+    )
+    parser.add_argument(
+        "--whoisxml-max-pages",
+        type=int,
+        default=1,
+        help=(
+            "Nombre maximal de pages WhoisXML API par domaine (défaut: 1; "
+            "10 000 résultats maximum par page)"
+        ),
+    )
+    parser.add_argument(
+        "--whoisxml-drs-credit-limit",
+        type=int,
+        default=500,
+        help="Solde DRS de référence si l'API de solde est illisible (défaut: 500)",
+    )
+    parser.add_argument(
+        "--whoisxml-credits-used",
+        type=int,
+        default=0,
+        help="Crédits DRS déjà consommés hors du script (défaut: 0)",
+    )
+    parser.add_argument(
+        "--whoisxml-state-file",
+        default=str(default_state_directory() / "whoisxmlapi-usage.json"),
+        help="Fichier local persistant du compteur de secours WhoisXML API",
+    )
+    parser.add_argument(
         "--nmap",
         action="store_true",
         help=(
@@ -1325,6 +1522,9 @@ def main() -> int:
         "DNSDUMPSTER_API_KEY", yaml_api_keys["dnsdumpster"]
     ).strip()
     whois_api_key = os.environ.get("WHOIS_API_KEY", yaml_api_keys["whois"]).strip()
+    whoisxml_api_key = os.environ.get(
+        "WHOISXMLAPI_API_KEY", yaml_api_keys["whoisxmlapi"]
+    ).strip()
 
     if not args.input and not args.domain:
         parser.error("utilisez --input ou au moins un --domain")
@@ -1337,10 +1537,19 @@ def main() -> int:
         or args.dnsdumpster_today_count < 0
         or args.whois_monthly_quota < 1
         or args.whois_month_count < 0
+        or args.whoisxml_max_pages < 1
+        or args.whoisxml_max_pages > 100
+        or args.whoisxml_drs_credit_limit < 1
+        or args.whoisxml_credits_used < 0
         or args.nmap_max_ips < 1
         or args.nmap_max_ips > 4096
     ):
         parser.error("paramètres workers/retries/delay invalides")
+    if args.whoisxml_subdomains and not whoisxml_api_key:
+        parser.error(
+            "--whoisxml-subdomains exige WHOISXMLAPI_API_KEY ou "
+            "api_keys.whoisxmlapi dans le YAML"
+        )
 
     domains = load_domains(args)
     if not domains:
@@ -1353,6 +1562,7 @@ def main() -> int:
     rdap_contact_rows: list[dict[str, Any]] = []
     whois_contact_rows: list[dict[str, Any]] = []
     dnsdumpster_rows: list[dict[str, Any]] = []
+    whoisxml_subdomain_rows: list[dict[str, Any]] = []
     domain_dns_rows: list[dict[str, Any]] = []
     discovered_by_root: dict[str, dict[str, set[str]]] = {}
     dnsdumpster_state_file = prepare_state_file(
@@ -1369,6 +1579,21 @@ def main() -> int:
     )
     whois_usage = load_whois_usage(whois_state_file, args.whois_month_count)
     whois_skipped_quota = 0
+    whoisxml_state_file = prepare_state_file(
+        Path(args.whoisxml_state_file).expanduser().resolve(),
+        "whoisxmlapi-usage.json",
+    )
+    whoisxml_usage = load_whoisxml_usage(
+        whoisxml_state_file, args.whoisxml_credits_used
+    )
+    whoisxml_official_remaining: int | None = None
+    whoisxml_skipped_quota = 0
+    whoisxml_requests_attempted = 0
+    whoisxml_disabled_after_error = False
+    if args.whoisxml_subdomains:
+        whoisxml_official_remaining = get_whoisxml_drs_balance(
+            whoisxml_api_key, args.delay
+        )
     dkim_selectors = tuple(
         dict.fromkeys(
             selector.strip().lower()
@@ -1382,7 +1607,8 @@ def main() -> int:
     print(
         "Sources optionnelles: "
         f"DNSDumpster={'activé' if dnsdumpster_api_key else 'désactivé (clé absente)'}, "
-        f"who.is={'activé' if whois_api_key else 'désactivé (clé absente)'}",
+        f"who.is={'activé' if whois_api_key else 'désactivé (clé absente)'}, "
+        f"WhoisXML Subdomains={'activé' if args.whoisxml_subdomains else 'désactivé'}",
         flush=True,
     )
     if dnsdumpster_api_key:
@@ -1399,6 +1625,21 @@ def main() -> int:
             "comptabilisé(s) pour le mois UTC.",
             flush=True,
         )
+    if args.whoisxml_subdomains:
+        if whoisxml_official_remaining is not None:
+            print(
+                "WhoisXML API: "
+                f"{whoisxml_official_remaining} crédit(s) DRS restant(s) "
+                "selon l'API de solde.",
+                flush=True,
+            )
+        else:
+            print(
+                "WhoisXML API: solde officiel non interprétable; "
+                f"compteur local {whoisxml_usage}/"
+                f"{args.whoisxml_drs_credit_limit} crédit(s).",
+                flush=True,
+            )
 
     # Étape 1 : métadonnées/contacts RDAP et découverte passive des noms.
     for root in domains:
@@ -1524,6 +1765,66 @@ def main() -> int:
             source_map.setdefault(name, set()).add(
                 "domaine racine" if name == root else "crt.sh"
             )
+        if args.whoisxml_subdomains and not whoisxml_disabled_after_error:
+            cursor = ""
+            seen_cursors: set[str] = set()
+            for _ in range(args.whoisxml_max_pages):
+                remaining = (
+                    whoisxml_official_remaining
+                    if whoisxml_official_remaining is not None
+                    else args.whoisxml_drs_credit_limit - whoisxml_usage
+                )
+                if remaining < 10:
+                    whoisxml_skipped_quota += 1
+                    if whoisxml_skipped_quota == 1:
+                        print(
+                            "AVERTISSEMENT: moins de 10 crédits DRS WhoisXML "
+                            "API disponibles; les appels restants sont ignorés.",
+                            file=sys.stderr,
+                        )
+                    break
+
+                # Une page coûte 10 crédits. Le compteur local est persisté
+                # avant l'appel pour rester conservateur en cas d'interruption.
+                whoisxml_usage += 10
+                whoisxml_requests_attempted += 1
+                save_whoisxml_usage(
+                    whoisxml_state_file,
+                    whoisxml_usage,
+                    args.whoisxml_drs_credit_limit,
+                )
+                if whoisxml_official_remaining is not None:
+                    whoisxml_official_remaining = max(
+                        0, whoisxml_official_remaining - 10
+                    )
+                (
+                    whoisxml_names,
+                    whoisxml_records,
+                    next_cursor,
+                    whoisxml_status,
+                ) = get_whoisxml_subdomains_page(
+                    root, whoisxml_api_key, cursor, args.delay
+                )
+                for name in whoisxml_names:
+                    source_map.setdefault(name, set()).add("WhoisXML API")
+                whoisxml_subdomain_rows.extend(whoisxml_records)
+
+                if whoisxml_status != 200:
+                    whoisxml_disabled_after_error = True
+                    print(
+                        "AVERTISSEMENT: échec d'une requête WhoisXML API "
+                        f"(HTTP {whoisxml_status or 'indisponible'}); source "
+                        "désactivée pour la suite de l'exécution afin d'éviter "
+                        "des tentatives payantes répétées.",
+                        file=sys.stderr,
+                    )
+                    break
+                if not next_cursor or next_cursor in seen_cursors:
+                    break
+                seen_cursors.add(next_cursor)
+                cursor = next_cursor
+                # Bien en dessous de la limite officielle de 30 requêtes/s.
+                time.sleep(max(0.05, args.delay))
         if dnsdumpster_api_key and dnsdumpster_usage < args.dnsdumpster_daily_quota:
             # Le compteur est incrémenté avant l'appel : même si le processus est
             # interrompu ou si l'API échoue, le suivi local reste conservateur.
@@ -1724,6 +2025,17 @@ def main() -> int:
         "DomaineRacine", "Type", "Hote", "IP", "PTR", "ASN", "ProprietaireASN",
         "PlageASN", "Pays", "CodePays", "Source",
     ], ("DomaineRacine", "Type", "Hote", "IP", "PTR"), args.output_mode, execution_utc)
+    whoisxml_subdomain_rows = write_inventory_csv(
+        output / "whoisxml-subdomains.csv",
+        whoisxml_subdomain_rows,
+        [
+            "DomaineRacine", "SousDomaine", "PremiereVueFournisseurUTC",
+            "DerniereVueFournisseurUTC", "Source",
+        ],
+        ("DomaineRacine", "SousDomaine"),
+        args.output_mode,
+        execution_utc,
+    )
     domain_dns_rows = write_inventory_csv(output / "enregistrements-dns.csv", domain_dns_rows, [
         "Domaine", "NomInterroge", "TypeDNS", "Categorie", "Valeur", "TTL",
         "CodeDNS", "Statut", "Source",
@@ -1761,7 +2073,8 @@ def main() -> int:
         "inventaire_global_lignes": len(global_rows),
         "services_externes": ["rdap.org", "crt.sh", "ipwho.is", "dns.google"]
         + (["dnsdumpster.com"] if dnsdumpster_api_key else [])
-        + (["who.is"] if whois_api_key else []),
+        + (["who.is"] if whois_api_key else [])
+        + (["subdomains.whoisxmlapi.com"] if args.whoisxml_subdomains else []),
         "dnsdumpster_active": bool(dnsdumpster_api_key),
         "dnsdumpster_account": "Free User" if dnsdumpster_api_key else None,
         "dnsdumpster_daily_quota": args.dnsdumpster_daily_quota,
@@ -1779,6 +2092,18 @@ def main() -> int:
         "who_is_remaining": max(0, args.whois_monthly_quota - whois_usage),
         "who_is_domains_skipped_quota": whois_skipped_quota,
         "who_is_state_file": str(whois_state_file),
+        "whoisxml_subdomains_active": bool(args.whoisxml_subdomains),
+        "whoisxml_max_pages_per_domain": (
+            args.whoisxml_max_pages if args.whoisxml_subdomains else 0
+        ),
+        "whoisxml_credits_per_request": 10,
+        "whoisxml_official_remaining_final": whoisxml_official_remaining,
+        "whoisxml_local_credits_attempted": whoisxml_usage,
+        "whoisxml_requests_attempted": whoisxml_requests_attempted,
+        "whoisxml_domains_or_pages_skipped_quota": whoisxml_skipped_quota,
+        "whoisxml_disabled_after_request_error": whoisxml_disabled_after_error,
+        "whoisxml_state_file": str(whoisxml_state_file),
+        "whoisxml_subdomains_records": len(whoisxml_subdomain_rows),
         "contacts_rdap_publics": len(rdap_contact_rows),
         "contacts_whois_publics": len(whois_contact_rows),
         "enregistrements_dnsdumpster": len(dnsdumpster_rows),

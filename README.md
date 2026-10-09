@@ -70,8 +70,9 @@ Références Debian : paquets officiels
 [`nmap`](https://packages.debian.org/stable/nmap), ainsi que les
 [notes de publication Debian sur les environnements Python gérés](https://www.debian.org/releases/stable/release-notes/).
 
-Les enrichissements DNSDumpster et who.is sont optionnels et nécessitent chacun
-une clé API personnelle. Le script n'effectue aucun scraping de leurs pages web.
+Les enrichissements DNSDumpster, who.is et WhoisXML API sont optionnels et
+nécessitent chacun une clé API personnelle. Le script n'effectue aucun scraping
+de leurs pages web.
 
 ## Utilisation
 
@@ -121,7 +122,7 @@ Le YAML permet de configurer :
 - les préfixes de sous-domaines classiques ;
 - les sélecteurs DKIM testés par défaut ;
 - les ports Nmap par défaut ;
-- les clés API DNSDumpster et who.is.
+- les clés API DNSDumpster, who.is et WhoisXML API.
 
 Extrait minimal pour les clés :
 
@@ -129,6 +130,7 @@ Extrait minimal pour les clés :
 api_keys:
   dnsdumpster: "votre_cle_dnsdumpster"
   whois: "wis_live_votre_cle_whois"
+  whoisxmlapi: "votre_cle_whoisxmlapi"
 ```
 
 `config.yaml` et `config.local.yaml` sont ignorés par Git. Ne placez jamais de
@@ -144,7 +146,7 @@ Ordre de priorité :
 3. valeur du fichier YAML ;
 4. valeur intégrée au script.
 
-### Activer DNSDumpster et who.is
+### Activer DNSDumpster, who.is et WhoisXML API
 
 Créez les clés dans les tableaux de bord des services, puis placez-les dans des
 variables d'environnement, ou utilisez la section `api_keys` du YAML. Elles ne
@@ -154,6 +156,7 @@ d'environnement remplacent les valeurs du YAML :
 ```powershell
 $env:DNSDUMPSTER_API_KEY = "votre_cle_dnsdumpster"
 $env:WHOIS_API_KEY = "wis_live_votre_cle_whois"
+$env:WHOISXMLAPI_API_KEY = "votre_cle_whoisxmlapi"
 python .\domain_inventory.py --input .\domaines.txt --output .\resultats
 ```
 
@@ -162,6 +165,7 @@ Pour supprimer les clés de la session PowerShell après l'exécution :
 ```powershell
 Remove-Item Env:DNSDUMPSTER_API_KEY
 Remove-Item Env:WHOIS_API_KEY
+Remove-Item Env:WHOISXMLAPI_API_KEY
 ```
 
 Sous Bash/Linux, utilisez des variables exportées, puis supprimez-les de la
@@ -170,8 +174,9 @@ session après l'exécution :
 ```bash
 export DNSDUMPSTER_API_KEY="votre_cle_dnsdumpster"
 export WHOIS_API_KEY="wis_live_votre_cle_whois"
+export WHOISXMLAPI_API_KEY="votre_cle_whoisxmlapi"
 python3 ./domain_inventory.py --input ./domaines.txt --output ./resultats
-unset DNSDUMPSTER_API_KEY WHOIS_API_KEY
+unset DNSDUMPSTER_API_KEY WHOIS_API_KEY WHOISXMLAPI_API_KEY
 ```
 
 DNSDumpster impose officiellement une requête au maximum toutes les deux
@@ -311,6 +316,43 @@ distingue les lignes avec la colonne `SourceType` (`WHOIS` ou `RDAP`). Les
 colonnes `Handle`, `IdentifiantPublicType` et `IdentifiantPublic` sont alimentées
 par les entités RDAP who.is lorsqu'elles sont publiées.
 
+### Détection optionnelle avec WhoisXML API
+
+La source Subdomains Lookup reste désactivée tant que l'option
+`--whoisxml-subdomains` n'est pas présente. Elle complète `crt.sh`, DNSDumpster
+et les noms classiques ; tous les noms retenus sont ensuite résolus par le même
+traitement DNS.
+
+```powershell
+$env:WHOISXMLAPI_API_KEY = "votre_cle_whoisxmlapi"
+python .\domain_inventory.py --input .\domaines.txt `
+  --output .\resultats --whoisxml-subdomains
+```
+
+```bash
+export WHOISXMLAPI_API_KEY="votre_cle_whoisxmlapi"
+python3 ./domain_inventory.py --input ./domaines.txt \
+  --output ./resultats --whoisxml-subdomains
+```
+
+Le script interroge d'abord l'[endpoint officiel de solde](https://subdomains.whoisxmlapi.com/api/documentation/account-balance-information).
+Si le solde DRS ne peut pas être interprété, il utilise le compteur persistant
+`whoisxmlapi-usage.json` et les options de secours
+`--whoisxml-drs-credit-limit` et `--whoisxml-credits-used`. Le fournisseur
+annonce [500 crédits DRS gratuits](https://subdomains.whoisxmlapi.com/api/documentation/making-requests)
+et [10 crédits par requête](https://subdomains.whoisxmlapi.com/api/pricing).
+
+Une page contient au maximum 10 000 résultats. Par prudence, le script limite
+par défaut chaque domaine à une page. `--whoisxml-max-pages 2` autorise la page
+suivante via le curseur `searchAfter`, si le solde permet une deuxième requête.
+La cadence reste sous la [limite officielle de 30 requêtes par seconde](https://subdomains.whoisxmlapi.com/api/documentation/making-requests).
+Aucune reprise HTTP automatique n'est effectuée pour une page payante.
+
+Les dates `firstSeen` et `lastSeen` du fournisseur sont conservées dans
+`whoisxml-subdomains.csv`. Elles ne remplacent pas `DerniereDecouverte` dans
+`inventaire-global.csv` : cette dernière reste la date à laquelle le script a
+effectivement retrouvé et résolu l'observation DNS.
+
 Pour un seul domaine :
 
 ```powershell
@@ -335,7 +377,7 @@ Options utiles : `--workers 12`, `--delay 0.35` et `--retries 3`. Pour 400 domai
 
 ### Remplacement ou fusion des résultats
 
-Le comportement par défaut reste le remplacement complet des huit CSV sources :
+Le comportement par défaut reste le remplacement complet des neuf CSV sources :
 
 ```powershell
 python .\domain_inventory.py --input .\domaines.txt --output .\resultats --output-mode overwrite
@@ -489,6 +531,10 @@ propriétaire et exposerait inutilement les clés au processus privilégié.
 - `contacts-rdap.csv` : détail des entités RDAP publiques, y compris les rôles `administrative`, `billing`, `technical`, `registrant`, `abuse`, `registrar` ou `reseller` lorsqu'ils sont publiés. Les entités imbriquées sont également parcourues.
 - `contacts-whois.csv` : contacts WHOIS normalisés renvoyés par l'API who.is, lorsque cette source est activée.
 - `dnsdumpster.csv` : hôtes, IP, PTR, ASN, propriétaire réseau et pays renvoyés par DNSDumpster. Les hôtes trouvés sont fusionnés avec ceux de `crt.sh` avant résolution DNS.
+- `whoisxml-subdomains.csv` : sous-domaines renvoyés par WhoisXML API avec
+  les dates UTC de première et dernière vue du fournisseur. Le CSV est créé
+  même lorsque la source est désactivée afin de conserver un schéma de sortie
+  stable.
 - `enregistrements-dns.csv` : résultats consolidés de Google Public DNS et
   DNSDumpster pour MX, TXT/SPF, NS, CNAME, AAAA, DMARC et DKIM. Une même valeur
   vue par les deux sources n'apparaît qu'une fois et la colonne `Source` mentionne
@@ -553,7 +599,7 @@ Le rapport contient :
 - une synthèse chiffrée de l'exécution ;
 - l'état de présence de chaque fichier attendu ;
 - tous les champs de `resume.json` ;
-- l'intégralité des lignes des neuf CSV ;
+- l'intégralité des lignes des dix CSV ;
 - le nombre de ports Nmap ouverts observés ;
 - les limites méthodologiques et les avertissements d'attribution.
 
@@ -567,7 +613,8 @@ empêcher la génération des autres sections.
 La liste des domaines et les noms découverts sont transmis aux services activés.
 Sans clés optionnelles, il s'agit de `rdap.org`, `crt.sh`, `dns.google` et
 `ipwho.is`. Avec les
-enrichissements, les domaines sont aussi transmis à DNSDumpster et/ou who.is.
+enrichissements, les domaines sont aussi transmis à DNSDumpster, who.is et/ou
+WhoisXML API selon les options activées.
 Pour une confidentialité totale, il faut remplacer ces sources par des services
 internes ou des miroirs maîtrisés.
 
